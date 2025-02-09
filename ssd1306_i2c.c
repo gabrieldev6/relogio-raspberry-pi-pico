@@ -490,7 +490,7 @@ int main()
                             y += 8;
                         }
                         render(buf, &frame_area);
-                        sleep_ms(900);
+                        sleep_ms(950);
 
                         memset(buf, 0, SSD1306_BUF_LEN);
                         render(buf, &frame_area);
@@ -523,6 +523,7 @@ int main()
 
                             dates[1] = ++dates[1];
                         }
+                        // meses
                         if (dates[1] == 12)
                         {
                             dates[1] = 1;

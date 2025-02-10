@@ -493,7 +493,7 @@ int main()
                         sleep_ms(950);
 
                         memset(buf, 0, SSD1306_BUF_LEN);
-                        render(buf, &frame_area);
+                        // render(buf, &frame_area);
                         // segundos
                         dates[5] = ++dates[5];
                         if (dates[5] == 60)

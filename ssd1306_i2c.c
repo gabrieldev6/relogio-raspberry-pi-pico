@@ -57,6 +57,11 @@
 #define BT_A 5
 #define BT_B 6
 
+#define i2c_PORT_RTC i2c0
+#define SDA_RTC 0
+#define SCL_RTC 1
+#define DS1307_ADDRESS 0x68
+
 struct render_area
 {
     uint8_t start_col;
@@ -273,38 +278,68 @@ static void WriteString(uint8_t *buf, int16_t x, int16_t y, char *str)
     }
 }
 
-char *update_time()
-{
-    static int seconds = 0;
-    static int minutes = 0;
-    static int hours = 0;
-    char *text[1];
-    // Incrementar segundos
-    seconds++;
-    if (seconds >= 60)
-    {
-        seconds = 0;
-        minutes++;
-        if (minutes >= 60)
-        {
-            minutes = 0;
-            hours++;
-            if (hours >= 24)
-            {
-                hours = 0;
-            }
-        }
-    }
-
-    // Atualizar os valores no array text
-    // snprintf(text[1], 11, "%02d/%02d/2025", 30, 2); // Data fixa (exemplo)
-    snprintf(text[0], 9, "%02d:%02d:%02d", hours, minutes, seconds); // Hora dinâmica
-
-    return text[0]; // Retorna o array de strings atualizado
-}
 
 #endif
+uint8_t bcd_to_decimal(uint8_t bcd) {
+    return ((bcd >> 4) * 10) + (bcd & 0x0F);
+}
 
+uint8_t decimal_to_bcd(uint8_t decimal) {
+    return ((decimal / 10) << 4) | (decimal % 10);
+}
+
+char *read_rtc_hours() {
+    static char hoursST[12] ;
+    uint8_t buffer[7];
+
+    i2c_write_blocking(i2c_PORT_RTC, DS1307_ADDRESS, buffer, 1, true); // Comando de leitura
+    i2c_read_blocking(i2c_PORT_RTC, DS1307_ADDRESS, buffer, 7, false);
+
+    int seconds = bcd_to_decimal(buffer[0] & 0x7F);
+    int minutes = bcd_to_decimal(buffer[1]);
+    int hours = bcd_to_decimal(buffer[2]);
+
+    snprintf(hoursST, sizeof(hoursST), "  %02d %02d %02d", hours, minutes, seconds);
+
+    return hoursST;
+}
+char *read_rtc_date() {
+
+    static char dataST[20] ;
+    uint8_t buffer[7];
+
+    i2c_write_blocking(i2c_PORT_RTC, DS1307_ADDRESS, buffer, 1, true); // Comando de leitura
+    i2c_read_blocking(i2c_PORT_RTC, DS1307_ADDRESS, buffer, 7, false);
+
+    // Converter valores BCD para decimal
+    
+    int day = bcd_to_decimal(buffer[4]);
+    int month = bcd_to_decimal(buffer[5]);
+    int year = bcd_to_decimal(buffer[6]);
+
+    snprintf(dataST, sizeof(dataST), "  %02d %02d %04d", day, month, year);
+
+    return dataST;
+}
+
+void set_rtc_time(int year, int month, int day, int hour, int minute, int second) {
+    uint8_t buffer[8];
+    
+    // Converter valores decimais para BCD e preparar o buffer
+    buffer[0] = 0x00; // Endereço do primeiro registrador (Segundos)
+    buffer[1] = decimal_to_bcd(second); // Segundos
+    buffer[2] = decimal_to_bcd(minute); // Minutos
+    buffer[3] = decimal_to_bcd(hour);   // Horas
+    
+    buffer[4] = 0x01; // Dia da semana (pode ser configurado como 1)
+    buffer[5] = decimal_to_bcd(day);   // Dia do mês
+    buffer[6] = decimal_to_bcd(month); // Mês
+    buffer[7] = decimal_to_bcd(year - 2000); // Ano (2000 é o ponto de referência)
+
+    // Enviar os dados para o DS1307
+    i2c_write_blocking(i2c_PORT_RTC, DS1307_ADDRESS, buffer, 8, false);
+    printf("Data e hora configuradas no RTC.\n");
+}
 
 int main()
 {
@@ -318,8 +353,7 @@ int main()
     bi_decl(bi_2pins_with_func(14, 15, GPIO_FUNC_I2C));
     bi_decl(bi_program_description("SSD1306 OLED driver I2C example for the Raspberry Pi Pico"));
 
-    // I2C is "open drain", pull ups to keep signal high when no data is being
-    // sent
+    
     i2c_init(i2c_PORT, SSD1306_I2C_CLK * 1000);
     gpio_set_function(14, GPIO_FUNC_I2C);
     gpio_set_function(15, GPIO_FUNC_I2C);
@@ -327,6 +361,12 @@ int main()
     gpio_pull_up(15);
     // run through the complete initialization process
     SSD1306_init();
+
+    i2c_init(i2c_PORT_RTC, 100 * 1000); // Velocidade: 100kHz
+    gpio_set_function(SDA_RTC, GPIO_FUNC_I2C);
+    gpio_set_function(SCL_RTC, GPIO_FUNC_I2C);
+    gpio_pull_up(SDA_RTC);
+    gpio_pull_up(SCL_RTC);
 
     stdio_init_all();
 
@@ -337,6 +377,9 @@ int main()
     gpio_init(BT_B);
     gpio_set_dir(BT_B, GPIO_IN);
     gpio_pull_up(BT_B);
+    
+    // seta a hora e a data do rtc
+    
 
     // Initialize render area for entire frame (SSD1306_WIDTH pixels by SSD1306_NUM_PAGES pages)
     struct render_area frame_area = {
@@ -348,196 +391,40 @@ int main()
 
     calc_render_area_buflen(&frame_area);
 
-    // zero the entire display
+    // zero o display
     uint8_t buf[SSD1306_BUF_LEN];
     memset(buf, 0, SSD1306_BUF_LEN);
     render(buf, &frame_area);
 
-    // render 3 cute little raspberries
-
-    int dates[6] = {0, 0, 0, 0, 0, 0};
-
-    int count = 0;
-
-    int countB = 0; // é incrementado toda vez que o botao b é apertado
-    int countA = 0; // é incrementado toda vez que o botao a é apertado
-
     int y = 0;
+    set_rtc_time(24, 11, 11, 11, 11, 11);
+    // fluxo de execucao principal
+    while(true) {
+        
+        
+        char *text[] = {
+            "      data",
+            "",
+            read_rtc_date(),
+            "",
+            "      hora",
+            "",
+            read_rtc_hours(),
 
-    char hours[12] = {};
-    char date[24] = {};
+        };
 
-    char *menu[] = {
-        "   botao b",
-        "   proximo",
-        "",
-        "   botao a",
-        "   confirmar",
-        "",
-        "   por favor",
-        "   confirme"};
-
-    while (true)
-    {
-        for (uint i = 0; i < count_of(menu); i++)
+        y = 0;
+        for (uint i = 0; i < count_of(text); i++)
         {
-            WriteString(buf, 5, y, menu[i]);
+            WriteString(buf, 5, y, text[i]);
             y += 8;
         }
         render(buf, &frame_area);
-        y = 0;
+        sleep_ms(1000);
 
-        if (!gpio_get(BT_A))
-        {
-            sleep_ms(200);
-            memset(buf, 0, SSD1306_BUF_LEN);
-            render(buf, &frame_area);
-
-            while (true)
-            {
-                char *configHD[] = {
-                    " configuracao",
-                    "",
-                    "data",
-                    date,
-                    "hora",
-                    hours,
-                    "aperte o botao",
-                    "b para iniciar"};
-
-                for (uint i = 0; i < count_of(configHD); i++)
-                {
-                    WriteString(buf, 5, y, configHD[i]);
-                    y += 8;
-                }
-
-                render(buf, &frame_area);
-                memset(buf, 0, SSD1306_BUF_LEN);
-                y = 0;
-
-                if (!gpio_get(BT_B))
-                {
-                    sleep_ms(500);
-
-                    dates[countA] = ++countB;
-
-                    memset(buf, 0, SSD1306_BUF_LEN);
-                    char *configHD[] = {
-                        " configuracao",
-                        "",
-                        "data",
-                        date,
-                        "hora",
-                        hours,
-
-                    };
-
-                    for (uint i = 0; i < 5; i++)
-                    {
-                        WriteString(buf, 5, y, configHD[i]);
-                        y += 8;
-                    }
-
-                    render(buf, &frame_area);
-                    memset(buf, 0, SSD1306_BUF_LEN);
-                    y = 0;
-                    snprintf(hours, sizeof(hours), "%d %d %d", dates[3], dates[4], dates[5]);
-                    snprintf(date, sizeof(date), "%d %d %d", dates[0], dates[1], dates[2] + 2000);
-                }
-                else if (!gpio_get(BT_A))
-                {
-                    sleep_ms(500);
-
-                    countB = 0;
-                    ++countA;
-                    dates[countA];
-
-                    memset(buf, 0, SSD1306_BUF_LEN);
-                    render(buf, &frame_area);
-
-                    for (uint i = 0; i < count_of(configHD); i++)
-                    {
-                        WriteString(buf, 5, y, configHD[i]);
-                        y += 8;
-                    }
-                    render(buf, &frame_area);
-                    y = 0;
-                    if (countA >= 6)
-                    {
-
-                        memset(buf, 0, SSD1306_BUF_LEN);
-                        render(buf, &frame_area);
-                    // fluxo de execucao principal
-                    restart:
-
-                        char *text[] = {
-                            "      data",
-                            "",
-                            date,
-                            "",
-                            "      hora",
-                            "",
-                            hours,
-
-                        };
-                        snprintf(hours, sizeof(hours), "   %02d %02d %02d", dates[3], dates[4], dates[5]);
-                        snprintf(date, sizeof(date), "   %02d %02d %04d", dates[0], dates[1], dates[2] + 2000);
-
-                        y = 0;
-                        for (uint i = 0; i < count_of(text); i++)
-                        {
-                            WriteString(buf, 5, y, text[i]);
-                            y += 8;
-                        }
-                        render(buf, &frame_area);
-                        sleep_ms(950);
-
-                        memset(buf, 0, SSD1306_BUF_LEN);
-                        render(buf, &frame_area);
-                        // segundos
-                        dates[5] = ++dates[5];
-                        if (dates[5] == 60)
-                        {
-                            dates[5] = 0;
-
-                            dates[4] = ++dates[4];
-                        }
-                        // minutos
-                        if (dates[4] == 60)
-                        {
-                            dates[4] = 0;
-
-                            dates[3] = ++dates[3];
-                        }
-                        // horas
-                        if (dates[3] == 24)
-                        {
-                            dates[3] = 0;
-
-                            dates[2] = ++dates[2];
-                        }
-                        // dias
-                        if (dates[2] == 30)
-                        {
-                            dates[2] = 1;
-
-                            dates[1] = ++dates[1];
-                        }
-                        // meses
-                        if (dates[1] == 12)
-                        {
-                            dates[1] = 1;
-
-                            dates[0] = ++dates[0];
-                        }
-                        // sleep_ms(1);
-
-                        goto restart;
-                    }
-                }
-            }
-        }
-        sleep_ms(10);
+        memset(buf, 0, SSD1306_BUF_LEN);
+        // render(buf, &frame_area);
+        
     }
 
 #endif
